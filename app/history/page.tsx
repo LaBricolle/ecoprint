@@ -68,8 +68,10 @@ export default function HistoryPage() {
               </div>
               <div className="flex items-center gap-3 mt-2 text-xs text-sage/50">
                 <span>
-                  {r.carbon_kg_per_kg !== null
-                    ? `${Number(r.carbon_kg_per_kg).toFixed(1)} kg CO₂e/kg`
+                  {r.carbon_for_package !== null
+                    ? `${Number(r.carbon_for_package).toFixed(2)} kg CO₂e`
+                    : r.carbon_kg_per_kg !== null
+                    ? `${Number(r.carbon_kg_per_kg).toFixed(1)} kg CO₂e/kg (réf.)`
                     : "donnée indisponible"}
                 </span>
                 <span>·</span>
