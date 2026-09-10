@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: #0e1a14;
+  color: #eef2e9;
+  overscroll-behavior-y: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.focus-ring:focus-visible {
+  outline: 2px solid #a8e063;
+  outline-offset: 3px;
+}
+
+.grain {
+  background-image: radial-gradient(circle at 1px 1px, rgba(238, 242, 233, 0.06) 1px, transparent 0);
+  background-size: 3px 3px;
+}
