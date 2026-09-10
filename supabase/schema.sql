@@ -9,10 +9,16 @@ create table if not exists scan_history (
   brand text,
   barcode text,
   carbon_kg_per_kg numeric,
+  weight_grams numeric,
+  carbon_for_package numeric,
   grade text not null default 'unknown',
   image_url text,
   created_at timestamptz not null default now()
 );
+
+-- Si la table existait déjà avant cette mise à jour, exécutez aussi :
+-- alter table scan_history add column if not exists weight_grams numeric;
+-- alter table scan_history add column if not exists carbon_for_package numeric;
 
 create index if not exists scan_history_device_id_idx on scan_history (device_id);
 
