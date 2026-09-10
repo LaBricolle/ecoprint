@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ProductImpact } from "@/lib/types";
-import { buildEquivalences, gradeLabel } from "@/lib/carbon";
+import { buildEquivalences, gradeLabel, LIFECYCLE_STAGES } from "@/lib/carbon";
 import CarbonGauge from "./CarbonGauge";
 import { getOrCreateDeviceId } from "@/lib/supabase";
 
@@ -16,7 +16,14 @@ export default function ResultSheet({
   onClose: () => void;
 }) {
   const [saved, setSaved] = useState(false);
-  const equivalences = buildEquivalences(product.carbonKgPerKg);
+  const [showDetails, setShowDetails] = useState(false);
+
+  const hasRealWeight = product.weightGrams !== null && product.carbonForPackage !== null;
+  // On illustre les équivalences avec le chiffre le plus concret possible :
+  // l'empreinte du produit réellement scanné si on connaît son poids, sinon
+  // la référence "par kg" à titre indicatif.
+  const headlineValue = hasRealWeight ? product.carbonForPackage : product.carbonKgPerKg;
+  const equivalences = buildEquivalences(headlineValue);
 
   async function handleSave() {
     const device_id = getOrCreateDeviceId();
@@ -29,6 +36,8 @@ export default function ResultSheet({
         brand: product.brand,
         barcode: product.barcode,
         carbon_kg_per_kg: product.carbonKgPerKg,
+        weight_grams: product.weightGrams,
+        carbon_for_package: product.carbonForPackage,
         grade: product.grade,
         image_url: product.imageUrl,
       }),
@@ -48,9 +57,6 @@ export default function ResultSheet({
 
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs uppercase tracking-wide text-ink/50 hidden">
-              {/* pas de eyebrow générique : titre direct */}
-            </p>
             <h2 className="font-display text-2xl leading-tight">{product.name}</h2>
             {product.brand && <p className="text-ink/60 text-sm mt-1">{product.brand}</p>}
             {recognizedAs && (
@@ -68,14 +74,33 @@ export default function ResultSheet({
 
         <div className="flex justify-center my-6">
           <div className="bg-forest rounded-3xl px-6 py-4">
-            <CarbonGauge grade={product.grade} carbonKgPerKg={product.carbonKgPerKg} />
+            <CarbonGauge
+              grade={product.grade}
+              carbonKgPerKg={product.carbonKgPerKg}
+              value={headlineValue}
+              unitLabel={
+                hasRealWeight
+                  ? `kg CO₂e pour ${
+                      product.weightGrams! >= 1000
+                        ? `${(product.weightGrams! / 1000).toFixed(1)} kg`
+                        : `${product.weightGrams} g`
+                    }`
+                  : "kg CO₂e / kg (référence)"
+              }
+            />
           </div>
         </div>
 
-        <p className="text-center font-medium mb-6">{gradeLabel(product.grade)}</p>
+        <p className="text-center font-medium mb-1">{gradeLabel(product.grade)}</p>
+        {!hasRealWeight && product.carbonKgPerKg !== null && (
+          <p className="text-center text-xs text-ink/50 mb-6">
+            Poids du produit non trouvé — score affiché pour 1 kg, pas pour l'emballage réel.
+          </p>
+        )}
+        {hasRealWeight && <div className="mb-6" />}
 
-        {product.carbonKgPerKg !== null && equivalences.length > 0 && (
-          <div className="grid grid-cols-3 gap-3 mb-6">
+        {headlineValue !== null && equivalences.length > 0 && (
+          <div className="grid grid-cols-3 gap-3 mb-4">
             {equivalences.map((eq) => (
               <div key={eq.label} className="text-center bg-white/50 rounded-2xl py-3 px-2">
                 <p className="font-display text-lg">{eq.value}</p>
@@ -95,6 +120,34 @@ export default function ResultSheet({
           <p className="text-xs text-clay mb-4 text-center">
             Estimation par reconnaissance photo — moins fiable qu'un scan de code-barres.
           </p>
+        )}
+
+        <button
+          onClick={() => setShowDetails((v) => !v)}
+          className="w-full text-left text-sm text-deep underline underline-offset-4 mb-4 focus-ring rounded"
+        >
+          {showDetails ? "Masquer" : "Sur quoi se base ce chiffre ?"}
+        </button>
+
+        {showDetails && (
+          <div className="bg-white/50 rounded-2xl p-4 mb-6 space-y-3">
+            <p className="text-xs text-ink/60">
+              Le score vient d'Agribalyse (ADEME/INRAE) et additionne l'impact
+              de chaque étape de vie du produit :
+            </p>
+            <ul className="space-y-2">
+              {LIFECYCLE_STAGES.map((stage) => (
+                <li key={stage.label} className="text-xs">
+                  <span className="font-medium">{stage.label}.</span>{" "}
+                  <span className="text-ink/60">{stage.description}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-ink/40 pt-1 border-t border-ink/10">
+              C'est une moyenne par catégorie de produit, pas une mesure
+              spécifique à cette marque ou à ce lot précis.
+            </p>
+          </div>
         )}
 
         <div className="flex gap-3">
