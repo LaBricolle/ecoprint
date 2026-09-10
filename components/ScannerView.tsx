@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
+import type { Html5Qrcode } from "html5-qrcode";
 
 interface Props {
   onBarcodeDetected: (code: string) => void;
@@ -10,56 +10,106 @@ interface Props {
   errorMessage?: string;
 }
 
+const FILE_SCANNER_DIV_ID = "hidden-file-scanner";
+const SCAN_INTERVAL_MS = 450;
+
+// Instancie (une seule fois, à la demande) le décodeur "fichier" de
+// html5-qrcode. On l'utilise à la fois pour le mode Photo et pour le mode
+// Code-barres : au lieu de s'appuyer sur le scan vidéo en continu de la
+// librairie (peu fiable sur Safari iOS pour les codes-barres 1D, bug
+// documenté), on capture nous-mêmes des images de la vidéo plusieurs fois
+// par seconde et on les décode comme des photos. C'est le même chemin que
+// le mode Photo, donc tout aussi fiable, mais automatisé.
+let sharedFileScanner: Html5Qrcode | null = null;
+async function getFileScanner(): Promise<Html5Qrcode> {
+  if (sharedFileScanner) return sharedFileScanner;
+  const { Html5Qrcode } = await import("html5-qrcode");
+  if (!document.getElementById(FILE_SCANNER_DIV_ID)) {
+    const div = document.createElement("div");
+    div.id = FILE_SCANNER_DIV_ID;
+    div.style.display = "none";
+    document.body.appendChild(div);
+  }
+  sharedFileScanner = new Html5Qrcode(FILE_SCANNER_DIV_ID, { verbose: false } as any);
+  return sharedFileScanner;
+}
+
 export default function ScannerView({
   onBarcodeDetected,
   onPhotoCaptured,
   status,
   errorMessage,
 }: Props) {
-  const containerId = "barcode-reader";
-  const scannerRef = useRef<Html5Qrcode | null>(null);
   const [mode, setMode] = useState<"barcode" | "photo">("barcode");
   const [cameraError, setCameraError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const busyRef = useRef(false);
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   useEffect(() => {
     if (mode !== "barcode") return;
     let cancelled = false;
 
     (async () => {
-      const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
-      if (cancelled) return;
-
-      const instance = new Html5Qrcode(containerId, {
-        verbose: false,
-        formatsToSupport: [
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.EAN_8,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.UPC_E,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.QR_CODE,
-        ],
-        // Le décodeur natif du navigateur (BarcodeDetector) est plus fiable
-        // sur iOS Safari que le décodeur JS de secours pour les codes-barres.
-        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-      } as any);
-      scannerRef.current = instance;
-
       try {
-        await instance.start(
-          { facingMode: "environment" },
-          {
-            fps: 10,
-            qrbox: { width: 280, height: 140 },
-          },
-          (decodedText) => {
-            onBarcodeDetected(decodedText);
-          },
-          () => {
-            // ignore les frames sans détection
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+
+        const scanner = await getFileScanner();
+
+        intervalRef.current = setInterval(async () => {
+          if (busyRef.current || statusRef.current === "loading") return;
+          const video = videoRef.current;
+          const canvas = canvasRef.current;
+          if (!video || !canvas || video.readyState < 2) return;
+
+          busyRef.current = true;
+          const targetWidth = 640;
+          const scale = targetWidth / video.videoWidth;
+          canvas.width = targetWidth;
+          canvas.height = video.videoHeight * scale;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            busyRef.current = false;
+            return;
           }
-        );
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+          canvas.toBlob(
+            async (blob) => {
+              if (!blob) {
+                busyRef.current = false;
+                return;
+              }
+              try {
+                const file = new File([blob], "frame.jpg", { type: "image/jpeg" });
+                const result = await scanner.scanFileV2(file, false);
+                onBarcodeDetected(result.decodedText);
+              } catch {
+                // Pas de code détecté sur cette frame, on retente à la suivante.
+              } finally {
+                busyRef.current = false;
+              }
+            },
+            "image/jpeg",
+            0.85
+          );
+        }, SCAN_INTERVAL_MS);
       } catch (err) {
         setCameraError(
           "Impossible d'accéder à la caméra. Vérifiez les autorisations ou utilisez le mode photo."
@@ -69,10 +119,9 @@ export default function ScannerView({
 
     return () => {
       cancelled = true;
-      scannerRef.current
-        ?.stop()
-        .then(() => scannerRef.current?.clear())
-        .catch(() => {});
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     };
   }, [mode, onBarcodeDetected]);
 
@@ -83,17 +132,8 @@ export default function ScannerView({
     // 1. On tente d'abord de décoder un code-barres directement depuis la
     //    photo (plus fiable que le scan vidéo en continu, notamment sur iOS).
     try {
-      const { Html5Qrcode } = await import("html5-qrcode");
-      const tempId = "file-scan-temp";
-      if (!document.getElementById(tempId)) {
-        const div = document.createElement("div");
-        div.id = tempId;
-        div.style.display = "none";
-        document.body.appendChild(div);
-      }
-      const fileScanner = new Html5Qrcode(tempId, { verbose: false } as any);
-      const result = await fileScanner.scanFileV2(file, false);
-      fileScanner.clear();
+      const scanner = await getFileScanner();
+      const result = await scanner.scanFileV2(file, false);
       onBarcodeDetected(result.decodedText);
       return;
     } catch {
@@ -121,7 +161,14 @@ export default function ScannerView({
 
         {mode === "barcode" ? (
           <div className="absolute inset-6 rounded-blob overflow-hidden bg-black/40">
-            <div id={containerId} className="w-full h-full [&_video]:object-cover [&_video]:w-full [&_video]:h-full" />
+            <video
+              ref={videoRef}
+              playsInline
+              muted
+              autoPlay
+              className="w-full h-full object-cover"
+            />
+            <canvas ref={canvasRef} className="hidden" />
             <div className="pointer-events-none absolute left-6 right-6 top-1/2 h-0.5 bg-lime shadow-[0_0_12px_2px_rgba(168,224,99,0.7)] animate-scanline" />
           </div>
         ) : (
@@ -165,12 +212,6 @@ export default function ScannerView({
         </button>
       </div>
 
-      {mode === "barcode" && status === "idle" && !cameraError && (
-        <p className="text-sage/40 text-xs text-center max-w-xs">
-          Le scan ne détecte rien après quelques secondes ? Sur iPhone, le mode
-          Photo est plus fiable.
-        </p>
-      )}
       {status === "loading" && (
         <p className="text-sage/70 text-sm">Analyse en cours…</p>
       )}
