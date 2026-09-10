@@ -5,7 +5,10 @@ export interface ProductImpact {
   name: string;
   brand: string | null;
   imageUrl: string | null;
-  carbonKgPerKg: number | null; // kg CO2e per kg of product, from Agribalyse
+  carbonKgPerKg: number | null; // kg CO2e par kg de produit, référence Agribalyse
+  weightGrams: number | null; // poids réel du produit/emballage, si connu
+  weightSource: "declared" | "unknown"; // "declared" = champ quantity d'Open Food Facts
+  carbonForPackage: number | null; // kg CO2e pour LE produit réellement scanné (carbonKgPerKg * poids)
   grade: ImpactGrade;
   source: "openfoodfacts" | "ai-estimate";
   confidence: "high" | "medium" | "low";
@@ -23,6 +26,8 @@ export interface ScanRecord {
   brand: string | null;
   barcode: string | null;
   carbon_kg_per_kg: number | null;
+  weight_grams: number | null;
+  carbon_for_package: number | null;
   grade: ImpactGrade;
   image_url: string | null;
   created_at: string;
