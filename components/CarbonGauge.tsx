@@ -23,10 +23,16 @@ const GRADE_ANGLE: Record<ImpactGrade, number> = {
 export default function CarbonGauge({
   grade,
   carbonKgPerKg,
+  value,
+  unitLabel,
 }: {
   grade: ImpactGrade;
   carbonKgPerKg: number | null;
+  value?: number | null;
+  unitLabel?: string;
 }) {
+  const displayValue = value !== undefined ? value : carbonKgPerKg;
+  const label = unitLabel ?? "kg CO₂e / kg";
   const radius = 78;
   const circumference = Math.PI * radius; // demi-cercle
   const progress = GRADE_ANGLE[grade];
@@ -57,9 +63,9 @@ export default function CarbonGauge({
       </svg>
       <div className="absolute top-9 flex flex-col items-center">
         <span className="font-display text-4xl text-sage leading-none">
-          {carbonKgPerKg !== null ? carbonKgPerKg.toFixed(1) : "—"}
+          {displayValue !== null && displayValue !== undefined ? displayValue.toFixed(displayValue < 10 ? 2 : 1) : "—"}
         </span>
-        <span className="text-xs text-sage/60 mt-1">kg CO₂e / kg</span>
+        <span className="text-xs text-sage/60 mt-1">{label}</span>
       </div>
     </div>
   );
