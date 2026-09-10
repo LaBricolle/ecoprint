@@ -17,7 +17,7 @@ export default function AuthModal({ onClose }: { onClose: () => void }) {
     const { error } = await signInWithEmail(email);
     setSending(false);
     if (error) {
-      setError("Impossible d'envoyer le lien. Vérifiez l'adresse et réessayez.");
+      setError(error.message || "Impossible d'envoyer le lien. Vérifiez l'adresse et réessayez.");
       return;
     }
     setSent(true);
