@@ -24,6 +24,30 @@ create index if not exists scan_history_device_id_idx on scan_history (device_id
 
 alter table scan_history enable row level security;
 
+-- Compteur d'appels à la reconnaissance IA par utilisateur connecté et par
+-- jour, pour plafonner le coût (voir DAILY_QUOTA_PER_USER dans
+-- app/api/recognize). Nécessite l'authentification Supabase (Auth > Providers
+-- > Email doit être activé, c'est le cas par défaut sur un projet neuf).
+drop table if exists ai_usage_daily;
+
+create table ai_usage_daily (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  day date not null,
+  count int not null default 0,
+  primary key (user_id, day)
+);
+
+alter table ai_usage_daily enable row level security;
+
+-- Chaque utilisateur ne peut lire/modifier que sa propre ligne de quota,
+-- vérifié via auth.uid() (le token envoyé par le client, pas une simple
+-- valeur déclarée comme pour scan_history).
+create policy "Users manage their own AI usage row"
+  on ai_usage_daily
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
 -- Un device ne peut lire/écrire que ses propres entrées.
 -- Le device_id est envoyé par le client applicatif (pas d'auth Supabase ici),
 -- donc la policy s'appuie sur une vérification applicative côté route API.
