@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { device_id, product_name, brand, barcode, carbon_kg_per_kg, grade, image_url } = body;
+  const { device_id, product_name, brand, barcode, carbon_kg_per_kg, weight_grams, carbon_for_package, grade, image_url } = body;
 
   if (!device_id || !product_name) {
     return NextResponse.json({ error: "Champs requis manquants." }, { status: 400 });
@@ -39,6 +39,8 @@ export async function POST(req: NextRequest) {
       brand: brand || null,
       barcode: barcode || null,
       carbon_kg_per_kg: carbon_kg_per_kg ?? null,
+      weight_grams: weight_grams ?? null,
+      carbon_for_package: carbon_for_package ?? null,
       grade: grade || "unknown",
       image_url: image_url || null,
     })
