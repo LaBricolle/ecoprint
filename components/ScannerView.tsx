@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Html5Qrcode } from "html5-qrcode";
+import type { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 
 interface Props {
   onBarcodeDetected: (code: string) => void;
@@ -27,16 +27,32 @@ export default function ScannerView({
     let cancelled = false;
 
     (async () => {
-      const { Html5Qrcode } = await import("html5-qrcode");
+      const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
       if (cancelled) return;
 
-      const instance = new Html5Qrcode(containerId, { verbose: false });
+      const instance = new Html5Qrcode(containerId, {
+        verbose: false,
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.QR_CODE,
+        ],
+      });
       scannerRef.current = instance;
 
       try {
         await instance.start(
           { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 240, height: 160 } },
+          {
+            fps: 10,
+            qrbox: { width: 280, height: 140 },
+            // Le décodeur natif du navigateur (BarcodeDetector) est plus fiable
+            // sur iOS Safari que le décodeur JS de secours pour les codes-barres.
+            experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+          },
           (decodedText) => {
             onBarcodeDetected(decodedText);
           },
@@ -104,7 +120,7 @@ export default function ScannerView({
         type="file"
         accept="image/*"
         capture="environment"
-        className="hidden"
+        className="absolute w-px h-px opacity-0 overflow-hidden -z-10"
         onChange={handleFileChange}
       />
 
@@ -127,6 +143,12 @@ export default function ScannerView({
         </button>
       </div>
 
+      {mode === "barcode" && status === "idle" && !cameraError && (
+        <p className="text-sage/40 text-xs text-center max-w-xs">
+          Le scan ne détecte rien après quelques secondes ? Sur iPhone, le mode
+          Photo est plus fiable.
+        </p>
+      )}
       {status === "loading" && (
         <p className="text-sage/70 text-sm">Analyse en cours…</p>
       )}
