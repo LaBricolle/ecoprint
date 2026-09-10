@@ -34,6 +34,34 @@ async function getFileScanner(): Promise<Html5Qrcode> {
   return sharedFileScanner;
 }
 
+// Redimensionne une image côté client avant l'envoi à l'API de reconnaissance
+// IA, pour limiter le coût en tokens par appel (une photo de téléphone en
+// pleine résolution est inutilement lourde pour cet usage).
+function resizeImageToBase64(file: File, maxWidth: number, quality: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      const scale = Math.min(1, maxWidth / img.width);
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("Canvas non disponible"));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
+      URL.revokeObjectURL(objectUrl);
+      resolve(dataUrl.split(",")[1]);
+    };
+    img.onerror = reject;
+    img.src = objectUrl;
+  });
+}
+
 export default function ScannerView({
   onBarcodeDetected,
   onPhotoCaptured,
@@ -42,23 +70,91 @@ export default function ScannerView({
 }: Props) {
   const [mode, setMode] = useState<"barcode" | "photo">("barcode");
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [showManualCapture, setShowManualCapture] = useState(false);
+  const [manualCapturing, setManualCapturing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const manualTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const busyRef = useRef(false);
   const statusRef = useRef(status);
   statusRef.current = status;
 
+  // Décode une frame vidéo courante. targetWidth plus grand + qualité plus
+  // haute pour la capture manuelle, puisqu'elle n'est déclenchée qu'une fois
+  // (pas de contrainte de performance en continu comme la boucle automatique).
+  function decodeCurrentFrame(targetWidth: number, quality: number): Promise<string | null> {
+    return new Promise((resolve) => {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!video || !canvas || video.readyState < 2 || !video.videoWidth) {
+        resolve(null);
+        return;
+      }
+      const scale = Math.min(1, targetWidth / video.videoWidth);
+      canvas.width = video.videoWidth * scale;
+      canvas.height = video.videoHeight * scale;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(null);
+        return;
+      }
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(
+        async (blob) => {
+          if (!blob) {
+            resolve(null);
+            return;
+          }
+          try {
+            const scanner = await getFileScanner();
+            const file = new File([blob], "frame.jpg", { type: "image/jpeg" });
+            const result = await scanner.scanFileV2(file, false);
+            resolve(result.decodedText);
+          } catch {
+            resolve(null);
+          }
+        },
+        "image/jpeg",
+        quality
+      );
+    });
+  }
+
+  async function handleManualCapture() {
+    setManualCapturing(true);
+    // Capture en plus haute résolution/qualité que la boucle automatique,
+    // pour maximiser les chances sur cette tentative unique et volontaire.
+    const decoded = await decodeCurrentFrame(1280, 0.95);
+    setManualCapturing(false);
+    if (decoded) {
+      onBarcodeDetected(decoded);
+    } else {
+      setCameraError(
+        "Toujours rien détecté. Essayez le mode Photo, avec un cadrage bien net et sans reflet."
+      );
+    }
+  }
+
   useEffect(() => {
     if (mode !== "barcode") return;
     let cancelled = false;
+    setShowManualCapture(false);
+    setCameraError(null);
 
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment" },
+          video: {
+            facingMode: "environment",
+            // Demander une résolution native plus élevée aide l'autofocus et
+            // donne une image plus nette à décoder, en particulier pour des
+            // codes-barres 1D fins.
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
         });
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
@@ -70,45 +166,21 @@ export default function ScannerView({
           await videoRef.current.play();
         }
 
-        const scanner = await getFileScanner();
+        await getFileScanner();
+
+        // Si rien n'est détecté après 5 secondes, on propose une capture
+        // manuelle en pleine qualité plutôt que de laisser l'utilisateur
+        // deviner pourquoi ça ne marche pas.
+        manualTimerRef.current = setTimeout(() => {
+          if (!cancelled) setShowManualCapture(true);
+        }, 5000);
 
         intervalRef.current = setInterval(async () => {
           if (busyRef.current || statusRef.current === "loading") return;
-          const video = videoRef.current;
-          const canvas = canvasRef.current;
-          if (!video || !canvas || video.readyState < 2) return;
-
           busyRef.current = true;
-          const targetWidth = 640;
-          const scale = targetWidth / video.videoWidth;
-          canvas.width = targetWidth;
-          canvas.height = video.videoHeight * scale;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) {
-            busyRef.current = false;
-            return;
-          }
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-          canvas.toBlob(
-            async (blob) => {
-              if (!blob) {
-                busyRef.current = false;
-                return;
-              }
-              try {
-                const file = new File([blob], "frame.jpg", { type: "image/jpeg" });
-                const result = await scanner.scanFileV2(file, false);
-                onBarcodeDetected(result.decodedText);
-              } catch {
-                // Pas de code détecté sur cette frame, on retente à la suivante.
-              } finally {
-                busyRef.current = false;
-              }
-            },
-            "image/jpeg",
-            0.85
-          );
+          const decoded = await decodeCurrentFrame(900, 0.85);
+          busyRef.current = false;
+          if (decoded) onBarcodeDetected(decoded);
         }, SCAN_INTERVAL_MS);
       } catch (err) {
         setCameraError(
@@ -120,6 +192,7 @@ export default function ScannerView({
     return () => {
       cancelled = true;
       if (intervalRef.current) clearInterval(intervalRef.current);
+      if (manualTimerRef.current) clearTimeout(manualTimerRef.current);
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     };
@@ -141,13 +214,13 @@ export default function ScannerView({
       // IA du produit à partir de l'image.
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const base64 = result.split(",")[1];
-      onPhotoCaptured(base64, file.type);
-    };
-    reader.readAsDataURL(file);
+    // 2. Reconnaissance IA : on redimensionne d'abord l'image (max 800px de
+    //    large, JPEG compressé) pour limiter le coût en tokens par appel —
+    //    une photo brute de téléphone (plusieurs Mo) coûterait bien plus
+    //    cher à envoyer qu'une version compressée, pour un résultat de
+    //    reconnaissance identique.
+    const resizedBase64 = await resizeImageToBase64(file, 800, 0.6);
+    onPhotoCaptured(resizedBase64, "image/jpeg");
   }
 
   return (
@@ -211,6 +284,16 @@ export default function ScannerView({
           Photo
         </button>
       </div>
+
+      {mode === "barcode" && showManualCapture && (
+        <button
+          onClick={handleManualCapture}
+          disabled={manualCapturing}
+          className="px-5 py-2.5 rounded-full bg-lime text-forest text-sm font-medium disabled:opacity-60 focus-ring"
+        >
+          {manualCapturing ? "Capture…" : "Rien détecté ? Forcer la capture"}
+        </button>
+      )}
 
       {status === "loading" && (
         <p className="text-sage/70 text-sm">Analyse en cours…</p>
