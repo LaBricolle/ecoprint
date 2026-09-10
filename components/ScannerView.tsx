@@ -27,7 +27,15 @@ async function getFileScanner(): Promise<Html5Qrcode> {
   if (!document.getElementById(FILE_SCANNER_DIV_ID)) {
     const div = document.createElement("div");
     div.id = FILE_SCANNER_DIV_ID;
-    div.style.display = "none";
+    // IMPORTANT : display:none donne un élément de taille 0x0, ce qui peut
+    // empêcher le décodeur interne de construire correctement son canvas.
+    // On le sort de l'écran plutôt que de le masquer, en lui laissant une
+    // vraie taille.
+    div.style.position = "fixed";
+    div.style.top = "-9999px";
+    div.style.left = "-9999px";
+    div.style.width = "1280px";
+    div.style.height = "720px";
     document.body.appendChild(div);
   }
   sharedFileScanner = new Html5Qrcode(FILE_SCANNER_DIV_ID, { verbose: false } as any);
@@ -62,6 +70,62 @@ function resizeImageToBase64(file: File, maxWidth: number, quality: number): Pro
   });
 }
 
+// Tente de décoder un code-barres depuis un fichier image : image complète
+// d'abord, puis un recadrage centré zoomé si la première tentative échoue
+// (utile si le code-barres est petit dans la photo).
+function decodeFileWithCrop(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = async () => {
+      const scanner = await getFileScanner();
+      const canvas = document.createElement("canvas");
+
+      async function tryDecode(sx: number, sy: number, sw: number, sh: number): Promise<string | null> {
+        const targetWidth = 1280;
+        const scale = Math.min(1, targetWidth / sw);
+        canvas.width = sw * scale;
+        canvas.height = sh * scale;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+        return new Promise((res) => {
+          canvas.toBlob(
+            async (blob) => {
+              if (!blob) {
+                res(null);
+                return;
+              }
+              try {
+                const croppedFile = new File([blob], "crop.jpg", { type: "image/jpeg" });
+                const result = await scanner.scanFileV2(croppedFile, false);
+                res(result.decodedText);
+              } catch {
+                res(null);
+              }
+            },
+            "image/jpeg",
+            0.9
+          );
+        });
+      }
+
+      const full = await tryDecode(0, 0, img.width, img.height);
+      if (full) {
+        URL.revokeObjectURL(objectUrl);
+        resolve(full);
+        return;
+      }
+      const cropHeight = img.height * 0.4;
+      const cropped = await tryDecode(0, (img.height - cropHeight) / 2, img.width, cropHeight);
+      URL.revokeObjectURL(objectUrl);
+      resolve(cropped);
+    };
+    img.onerror = () => resolve(null);
+    img.src = objectUrl;
+  });
+}
+
 export default function ScannerView({
   onBarcodeDetected,
   onPhotoCaptured,
@@ -85,42 +149,59 @@ export default function ScannerView({
   // Décode une frame vidéo courante. targetWidth plus grand + qualité plus
   // haute pour la capture manuelle, puisqu'elle n'est déclenchée qu'une fois
   // (pas de contrainte de performance en continu comme la boucle automatique).
-  function decodeCurrentFrame(targetWidth: number, quality: number): Promise<string | null> {
-    return new Promise((resolve) => {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      if (!video || !canvas || video.readyState < 2 || !video.videoWidth) {
-        resolve(null);
-        return;
-      }
-      const scale = Math.min(1, targetWidth / video.videoWidth);
-      canvas.width = video.videoWidth * scale;
-      canvas.height = video.videoHeight * scale;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        resolve(null);
-        return;
-      }
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      canvas.toBlob(
-        async (blob) => {
-          if (!blob) {
-            resolve(null);
-            return;
-          }
-          try {
-            const scanner = await getFileScanner();
-            const file = new File([blob], "frame.jpg", { type: "image/jpeg" });
-            const result = await scanner.scanFileV2(file, false);
-            resolve(result.decodedText);
-          } catch {
-            resolve(null);
-          }
-        },
-        "image/jpeg",
-        quality
-      );
-    });
+  // Tente d'abord l'image complète, puis un recadrage centré zoomé (utile si
+  // le code-barres est petit ou loin dans le cadre).
+  async function decodeCurrentFrame(targetWidth: number, quality: number): Promise<string | null> {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2 || !video.videoWidth) {
+      return null;
+    }
+
+    const scanner = await getFileScanner();
+
+    async function tryDecode(
+      sx: number,
+      sy: number,
+      sw: number,
+      sh: number
+    ): Promise<string | null> {
+      const scale = Math.min(1, targetWidth / sw);
+      canvas!.width = sw * scale;
+      canvas!.height = sh * scale;
+      const ctx = canvas!.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(video!, sx, sy, sw, sh, 0, 0, canvas!.width, canvas!.height);
+
+      return new Promise((resolve) => {
+        canvas!.toBlob(
+          async (blob) => {
+            if (!blob) {
+              resolve(null);
+              return;
+            }
+            try {
+              const file = new File([blob], "frame.jpg", { type: "image/jpeg" });
+              const result = await scanner.scanFileV2(file, false);
+              resolve(result.decodedText);
+            } catch {
+              resolve(null);
+            }
+          },
+          "image/jpeg",
+          quality
+        );
+      });
+    }
+
+    // 1. Image complète.
+    const fullFrame = await tryDecode(0, 0, video.videoWidth, video.videoHeight);
+    if (fullFrame) return fullFrame;
+
+    // 2. Recadrage centré (bande horizontale du milieu), zoomé.
+    const cropHeight = video.videoHeight * 0.4;
+    const cropY = (video.videoHeight - cropHeight) / 2;
+    return tryDecode(0, cropY, video.videoWidth, cropHeight);
   }
 
   async function handleManualCapture() {
@@ -204,14 +285,10 @@ export default function ScannerView({
 
     // 1. On tente d'abord de décoder un code-barres directement depuis la
     //    photo (plus fiable que le scan vidéo en continu, notamment sur iOS).
-    try {
-      const scanner = await getFileScanner();
-      const result = await scanner.scanFileV2(file, false);
-      onBarcodeDetected(result.decodedText);
+    const decoded = await decodeFileWithCrop(file);
+    if (decoded) {
+      onBarcodeDetected(decoded);
       return;
-    } catch {
-      // Pas de code-barres détecté sur la photo : on tente la reconnaissance
-      // IA du produit à partir de l'image.
     }
 
     // 2. Reconnaissance IA : on redimensionne d'abord l'image (max 800px de
