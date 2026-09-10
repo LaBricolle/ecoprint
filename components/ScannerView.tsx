@@ -40,7 +40,10 @@ export default function ScannerView({
           Html5QrcodeSupportedFormats.CODE_128,
           Html5QrcodeSupportedFormats.QR_CODE,
         ],
-      });
+        // Le décodeur natif du navigateur (BarcodeDetector) est plus fiable
+        // sur iOS Safari que le décodeur JS de secours pour les codes-barres.
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      } as any);
       scannerRef.current = instance;
 
       try {
@@ -49,9 +52,6 @@ export default function ScannerView({
           {
             fps: 10,
             qrbox: { width: 280, height: 140 },
-            // Le décodeur natif du navigateur (BarcodeDetector) est plus fiable
-            // sur iOS Safari que le décodeur JS de secours pour les codes-barres.
-            experimentalFeatures: { useBarCodeDetectorIfSupported: true },
           },
           (decodedText) => {
             onBarcodeDetected(decodedText);
