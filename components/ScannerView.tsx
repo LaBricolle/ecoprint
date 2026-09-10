@@ -76,9 +76,31 @@ export default function ScannerView({
     };
   }, [mode, onBarcodeDetected]);
 
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // 1. On tente d'abord de décoder un code-barres directement depuis la
+    //    photo (plus fiable que le scan vidéo en continu, notamment sur iOS).
+    try {
+      const { Html5Qrcode } = await import("html5-qrcode");
+      const tempId = "file-scan-temp";
+      if (!document.getElementById(tempId)) {
+        const div = document.createElement("div");
+        div.id = tempId;
+        div.style.display = "none";
+        document.body.appendChild(div);
+      }
+      const fileScanner = new Html5Qrcode(tempId, { verbose: false } as any);
+      const result = await fileScanner.scanFileV2(file, false);
+      fileScanner.clear();
+      onBarcodeDetected(result.decodedText);
+      return;
+    } catch {
+      // Pas de code-barres détecté sur la photo : on tente la reconnaissance
+      // IA du produit à partir de l'image.
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
@@ -112,7 +134,7 @@ export default function ScannerView({
           </button>
         )}
 
-        <span className="absolute -inset-2 rounded-blob border border-lime/20 animate-pulseRing" aria-hidden />
+        <span className="pointer-events-none absolute -inset-2 rounded-blob border border-lime/20 animate-pulseRing" aria-hidden />
       </div>
 
       <input
