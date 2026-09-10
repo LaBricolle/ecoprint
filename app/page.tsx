@@ -1,11 +1,14 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import ScannerView from "@/components/ScannerView";
 import ResultSheet from "@/components/ResultSheet";
 import LeafMark from "@/components/LeafMark";
+import AuthModal from "@/components/AuthModal";
 import { ProductImpact } from "@/lib/types";
+import { getCurrentSession, onAuthStateChange, signOut } from "@/lib/supabase";
+import type { Session } from "@supabase/supabase-js";
 
 export default function HomePage() {
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
@@ -13,6 +16,14 @@ export default function HomePage() {
   const [result, setResult] = useState<ProductImpact | null>(null);
   const [recognizedAs, setRecognizedAs] = useState<string | undefined>();
   const [lastBarcode, setLastBarcode] = useState<string | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+
+  useEffect(() => {
+    getCurrentSession().then(setSession);
+    const subscription = onAuthStateChange((s) => setSession(s));
+    return () => subscription.unsubscribe();
+  }, []);
 
   const handleBarcodeDetected = useCallback(
     async (code: string) => {
@@ -40,30 +51,43 @@ export default function HomePage() {
     [lastBarcode, status]
   );
 
-  const handlePhotoCaptured = useCallback(async (base64: string, mediaType: string) => {
-    setStatus("loading");
-    setErrorMessage(undefined);
-
-    try {
-      const res = await fetch("/api/recognize", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ imageBase64: base64, mediaType }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setStatus("error");
-        setErrorMessage(data.error);
+  const handlePhotoCaptured = useCallback(
+    async (base64: string, mediaType: string) => {
+      // La reconnaissance IA (pas le scan de code-barres) est réservée aux
+      // comptes connectés, pour maîtriser le coût des appels à l'API Claude.
+      if (!session) {
+        setShowAuthModal(true);
         return;
       }
-      setResult(data.product);
-      setRecognizedAs(data.recognizedAs);
-      setStatus("idle");
-    } catch {
-      setStatus("error");
-      setErrorMessage("Erreur réseau. Réessayez.");
-    }
-  }, []);
+
+      setStatus("loading");
+      setErrorMessage(undefined);
+
+      try {
+        const res = await fetch("/api/recognize", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ imageBase64: base64, mediaType }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setStatus("error");
+          setErrorMessage(data.error);
+          return;
+        }
+        setResult(data.product);
+        setRecognizedAs(data.recognizedAs);
+        setStatus("idle");
+      } catch {
+        setStatus("error");
+        setErrorMessage("Erreur réseau. Réessayez.");
+      }
+    },
+    [session]
+  );
 
   function closeResult() {
     setResult(null);
@@ -82,12 +106,29 @@ export default function HomePage() {
           <LeafMark className="w-7 h-7" />
           <span className="font-display text-lg text-sage">Empreinte</span>
         </div>
-        <Link
-          href="/history"
-          className="text-sm text-sage/70 hover:text-sage transition-colors focus-ring rounded px-2 py-1"
-        >
-          Historique
-        </Link>
+        <div className="flex items-center gap-4">
+          {session ? (
+            <button
+              onClick={() => signOut()}
+              className="text-sm text-sage/70 hover:text-sage transition-colors focus-ring rounded px-2 py-1"
+            >
+              Se déconnecter
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowAuthModal(true)}
+              className="text-sm text-sage/70 hover:text-sage transition-colors focus-ring rounded px-2 py-1"
+            >
+              Se connecter
+            </button>
+          )}
+          <Link
+            href="/history"
+            className="text-sm text-sage/70 hover:text-sage transition-colors focus-ring rounded px-2 py-1"
+          >
+            Historique
+          </Link>
+        </div>
       </header>
 
       <section className="flex-1 flex flex-col items-center justify-center gap-8 px-6 py-10">
@@ -116,6 +157,7 @@ export default function HomePage() {
       {result && (
         <ResultSheet product={result} recognizedAs={recognizedAs} onClose={closeResult} />
       )}
+      {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
     </main>
   );
 }
